@@ -10,6 +10,7 @@ from folium.plugins import HeatMap, HeatMapWithTime, MarkerCluster
 from streamlit_folium import st_folium, folium_static
 from sklearn.cluster import DBSCAN
 import hdbscan
+import gc
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, silhouette_score, calinski_harabasz_score
 from sklearn.preprocessing import StandardScaler
@@ -499,9 +500,12 @@ with tab2:
     else:
         pass
 
+import gc
+
 with tab3:
     st.header("Crime Hotspot Detection and Clustering")
 
+    # Clustering form
     with st.form(key="clustering_form"):
         clustering_algorithm = st.selectbox(
             "Select Clustering Algorithm",
@@ -510,7 +514,7 @@ with tab3:
 
         features = st.multiselect(
             "Select Features for Clustering",
-            ["Latitude", "Longitude"],
+            ["Latitude", "Longitude", "ZIPCode", "CrimeType"],
             default=["Latitude", "Longitude"]
         )
 
@@ -526,7 +530,13 @@ with tab3:
 
         submit_button = st.form_submit_button(label="Run Clustering")
 
+    # Clustering logic
     if submit_button:
+        # Reset session state to avoid old data persisting
+        st.session_state.pop("clustering_data", None)
+        st.session_state.pop("clustering_data_scaled", None)
+        st.session_state.pop("crime_map", None)
+
         if len(features) < 2:
             st.warning("Please select at least two features for clustering.")
         else:
@@ -541,52 +551,52 @@ with tab3:
             elif clustering_algorithm == "HDBSCAN":
                 model = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size)
             elif clustering_algorithm == "Hierarchical Clustering":
-                from sklearn.cluster import AgglomerativeClustering
                 model = AgglomerativeClustering(n_clusters=n_clusters)
 
             # Fit the model and assign cluster labels
             clustering_data["Cluster"] = model.fit_predict(clustering_data_scaled)
 
-            # Store results in session state
+            # Add cluster labels to session state
             st.session_state["clustering_data"] = clustering_data
             st.session_state["clustering_data_scaled"] = clustering_data_scaled
 
-            st.write(f"Number of Clusters Detected: {clustering_data['Cluster'].nunique()}")
-            st.dataframe(clustering_data)
-
-            # Add the cluster labels back to the original data
-            data["Cluster"] = None
-            data.loc[clustering_data.index, "Cluster"] = clustering_data["Cluster"]
-
             # Generate the Crime Hotspot Map
-            st.subheader("Crime Hotspot Map")
             map_center = [data["Latitude"].mean(), data["Longitude"].mean()]
             folium_map = folium.Map(location=map_center, zoom_start=12)
 
             cluster_colors = ["red", "blue", "green", "purple", "orange", "darkred", "lightred",
                               "beige", "darkblue", "darkgreen", "cadetblue", "darkpurple", "white"]
-            for _, row in data.dropna(subset=["Latitude", "Longitude"]).iterrows():
+            for _, row in clustering_data.iterrows():
                 cluster_id = row["Cluster"]
-                if cluster_id != -1:
-                    color = cluster_colors[cluster_id % len(cluster_colors)]
+                if cluster_id != -1 and not pd.isnull(cluster_id):
+                    color = cluster_colors[int(cluster_id) % len(cluster_colors)]
                     folium.CircleMarker(
                         location=(row["Latitude"], row["Longitude"]),
                         radius=5,
                         color=color,
                         fill=True,
                         fill_opacity=0.7,
-                        tooltip=f"CrimeType: {row['CrimeType']}<br>Cluster: {cluster_id}",
+                        tooltip=f"Cluster: {cluster_id}",
                     ).add_to(folium_map)
 
+            # Store map in session state and display it
+            st.session_state["crime_map"] = folium_map
+            st.subheader("Crime Hotspot Map")
             st_folium(folium_map, width=800, height=600)
 
+            # Clear unused variables from memory
+            del clustering_data, clustering_data_scaled, model
+            gc.collect()
 
-
+    # Display existing map if present
+    if "crime_map" in st.session_state:
+        st_folium(st.session_state["crime_map"], width=800, height=600)
 
 
 with tab4:
     st.header("Performance Metrics")
 
+    # Check if clustering data exists
     if "clustering_data" in st.session_state and "clustering_data_scaled" in st.session_state:
         clustering_data = st.session_state["clustering_data"]
         clustering_data_scaled = st.session_state["clustering_data_scaled"]
@@ -594,28 +604,22 @@ with tab4:
         if "Cluster" in clustering_data.columns and clustering_data["Cluster"].nunique() > 1:
             db_score = davies_bouldin_score(clustering_data_scaled, clustering_data["Cluster"])
             st.write(f"Davies-Bouldin Index: {db_score:.2f}")
-        else:
-            st.warning("Not enough clusters for Davies-Bouldin Index.")
 
-        if "Cluster" in clustering_data.columns and clustering_data["Cluster"].nunique() > 1:
             ch_score = calinski_harabasz_score(clustering_data_scaled, clustering_data["Cluster"])
             st.write(f"Calinski-Harabasz Index: {ch_score:.2f}")
+
+            silhouette = silhouette_score(clustering_data_scaled, clustering_data["Cluster"])
+            st.write(f"Silhouette Score: {silhouette:.2f}")
+
+            st.subheader("Cluster Summary")
+            cluster_summary = clustering_data.groupby("Cluster").mean()
+            st.dataframe(cluster_summary)
         else:
-            st.warning("Not enough clusters for Calinski-Harabasz Index.")
+            st.warning("Not enough clusters for meaningful metrics.")
 
-        silhouette = silhouette_score(clustering_data_scaled, clustering_data["Cluster"])
-        st.write(f"Silhouette Score: {silhouette:.2f}")
-
-        st.subheader("Cluster Summary")
-        cluster_summary = clustering_data.groupby("Cluster").mean()
-        st.dataframe(cluster_summary)
-
-        if "TrueLabels" in data.columns:
-            ari_score = adjusted_rand_score(data["TrueLabels"], clustering_data["Cluster"])
-            st.write(f"Adjusted Rand Index (ARI): {ari_score:.2f}")
-        else:
-            st.warning("Ground truth labels are not available for ARI computation.")
-
+        # Clear unused objects
+        del clustering_data_scaled
+        gc.collect()
     else:
         st.warning("Run clustering first to compute performance metrics.")
 
