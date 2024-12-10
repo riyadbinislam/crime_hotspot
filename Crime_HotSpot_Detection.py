@@ -510,7 +510,7 @@ with tab3:
 
         features = st.multiselect(
             "Select Features for Clustering",
-            ["Latitude", "Longitude", "ZIPCode", "CrimeType"],
+            ["Latitude", "Longitude"],
             default=["Latitude", "Longitude"]
         )
 
