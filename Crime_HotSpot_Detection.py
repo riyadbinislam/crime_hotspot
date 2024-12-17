@@ -1,4 +1,6 @@
 import io
+import os
+
 import numpy as np
 import requests
 import streamlit as st
@@ -505,6 +507,26 @@ import gc
 with tab3:
     st.header("Crime Hotspot Detection and Clustering")
 
+    import os
+
+    # Load precomputed results
+    def load_results(algorithm, params):
+        params_key = f"{algorithm}_" + "_".join([f"{k}={v}" for k, v in params.items()])
+        csv_path = f"saved_results/{params_key}_clusters.csv"
+        map_path = f"saved_results/{params_key}_map.html"
+
+        if os.path.exists(csv_path) and os.path.exists(map_path):
+            # Load clustering data
+            clustering_data = pd.read_csv(csv_path)
+
+            # Read the saved HTML map
+            with open(map_path, "r", encoding="utf-8") as map_file:
+                folium_map_html = map_file.read()
+
+            return clustering_data, folium_map_html
+        else:
+            return None, None
+
     # Clustering form
     with st.form(key="clustering_form"):
         clustering_algorithm = st.selectbox(
@@ -518,80 +540,84 @@ with tab3:
             default=["Latitude", "Longitude"]
         )
 
+        # Algorithm-specific parameters
         if clustering_algorithm == "DBSCAN":
             eps = st.slider("DBSCAN Epsilon (eps)", min_value=0.1, max_value=5.0, step=0.1, value=0.5)
             min_samples = st.slider("DBSCAN Minimum Samples", min_value=1, max_value=20, step=1, value=5)
+            params = {"eps": eps, "min_samples": min_samples}
 
         elif clustering_algorithm == "HDBSCAN":
             min_cluster_size = st.slider("HDBSCAN Minimum Cluster Size", min_value=2, max_value=50, step=1, value=5)
+            params = {"min_cluster_size": min_cluster_size}
 
         elif clustering_algorithm == "Hierarchical Clustering":
             n_clusters = st.slider("Number of Clusters", min_value=2, max_value=20, step=1, value=5)
+            params = {"n_clusters": n_clusters}
 
         submit_button = st.form_submit_button(label="Run Clustering")
 
     # Clustering logic
     if submit_button:
-        # Reset session state to avoid old data persisting
-        st.session_state.pop("clustering_data", None)
-        st.session_state.pop("clustering_data_scaled", None)
-        st.session_state.pop("crime_map", None)
-
         if len(features) < 2:
             st.warning("Please select at least two features for clustering.")
         else:
-            # Filter and scale the data
-            clustering_data = data[features].dropna()
-            scaler = StandardScaler()
-            clustering_data_scaled = scaler.fit_transform(clustering_data)
+            # Load precomputed results if they exist
+            clustering_data, folium_map_html = load_results(clustering_algorithm, params)
 
-            # Apply the selected clustering algorithm
-            if clustering_algorithm == "DBSCAN":
-                model = DBSCAN(eps=eps, min_samples=min_samples)
-            elif clustering_algorithm == "HDBSCAN":
-                model = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size)
-            elif clustering_algorithm == "Hierarchical Clustering":
-                model = AgglomerativeClustering(n_clusters=n_clusters)
+            if clustering_data is not None and folium_map_html is not None:
+                st.success(f"Loaded precomputed results for {clustering_algorithm} with parameters: {params}")
+                st.dataframe(clustering_data)
 
-            # Fit the model and assign cluster labels
-            clustering_data["Cluster"] = model.fit_predict(clustering_data_scaled)
+                # Render the saved HTML map
+                st.subheader("Crime Hotspot Map")
+                st.components.v1.html(folium_map_html, height=600, width=800)
+            else:
+                # Perform clustering if results are not precomputed
+                st.warning("Precomputed results not found. Running clustering...")
+                clustering_data = data[features].dropna()
+                scaler = StandardScaler()
+                clustering_data_scaled = scaler.fit_transform(clustering_data)
 
-            # Add cluster labels to session state
-            st.session_state["clustering_data"] = clustering_data
-            st.session_state["clustering_data_scaled"] = clustering_data_scaled
+                # Apply selected algorithm
+                if clustering_algorithm == "DBSCAN":
+                    model = DBSCAN(eps=params["eps"], min_samples=params["min_samples"])
+                elif clustering_algorithm == "HDBSCAN":
+                    model = hdbscan.HDBSCAN(min_cluster_size=params["min_cluster_size"])
+                elif clustering_algorithm == "Hierarchical Clustering":
+                    model = AgglomerativeClustering(n_clusters=params["n_clusters"])
 
-            # Generate the Crime Hotspot Map
-            map_center = [data["Latitude"].mean(), data["Longitude"].mean()]
-            folium_map = folium.Map(location=map_center, zoom_start=12)
+                clustering_data["Cluster"] = model.fit_predict(clustering_data_scaled)
 
-            cluster_colors = ["red", "blue", "green", "purple", "orange", "darkred", "lightred",
-                              "beige", "darkblue", "darkgreen", "cadetblue", "darkpurple", "white"]
-            for _, row in clustering_data.iterrows():
-                cluster_id = row["Cluster"]
-                if cluster_id != -1 and not pd.isnull(cluster_id):
-                    color = cluster_colors[int(cluster_id) % len(cluster_colors)]
-                    folium.CircleMarker(
-                        location=(row["Latitude"], row["Longitude"]),
-                        radius=5,
-                        color=color,
-                        fill=True,
-                        fill_opacity=0.7,
-                        tooltip=f"Cluster: {cluster_id}",
-                    ).add_to(folium_map)
+                # Generate Crime Hotspot Map
+                folium_map = folium.Map(location=[data["Latitude"].mean(), data["Longitude"].mean()], zoom_start=12)
+                cluster_colors = [
+                    "red", "blue", "green", "purple", "orange", "darkred", "lightred",
+                    "beige", "darkblue", "darkgreen", "cadetblue", "darkpurple", "white"
+                ]
+                for _, row in clustering_data.iterrows():
+                    cluster_id = row["Cluster"]
+                    if cluster_id != -1 and not pd.isnull(cluster_id):
+                        color = cluster_colors[int(cluster_id) % len(cluster_colors)]
+                        folium.CircleMarker(
+                            location=(row["Latitude"], row["Longitude"]),
+                            radius=5,
+                            color=color,
+                            fill=True,
+                            fill_opacity=0.7,
+                            tooltip=f"Cluster: {cluster_id}",
+                        ).add_to(folium_map)
 
-            # Store map in session state and display it
-            st.session_state["crime_map"] = folium_map
-            st.subheader("Crime Hotspot Map")
-            st_folium(folium_map, width=800, height=600)
+                # Save results for future use
+                os.makedirs("saved_results", exist_ok=True)
+                params_key = f"{clustering_algorithm}_" + "_".join([f"{k}={v}" for k, v in params.items()])
+                clustering_data.to_csv(f"saved_results/{params_key}_clusters.csv", index=False)
+                folium_map.save(f"saved_results/{params_key}_map.html")
+                st.success(f"Results saved for {clustering_algorithm} with parameters: {params}")
 
-            # Clear unused variables from memory
-            del clustering_data, clustering_data_scaled, model
-            gc.collect()
-
-    # Display existing map if present
-    if "crime_map" in st.session_state:
-        st_folium(st.session_state["crime_map"], width=800, height=600)
-
+                # Display results
+                st.dataframe(clustering_data)
+                st.subheader("Crime Hotspot Map")
+                folium_static(folium_map, width=800, height=600)
 
 with tab4:
     st.header("Performance Metrics")
