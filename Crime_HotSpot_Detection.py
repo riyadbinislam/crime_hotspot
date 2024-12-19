@@ -1,5 +1,4 @@
 import io
-import os
 
 import numpy as np
 import requests
@@ -12,9 +11,8 @@ from folium.plugins import HeatMap, HeatMapWithTime, MarkerCluster
 from streamlit_folium import st_folium, folium_static
 from sklearn.cluster import DBSCAN
 import hdbscan
-import gc
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import adjusted_rand_score, davies_bouldin_score, silhouette_score, calinski_harabasz_score
+from sklearn.metrics import davies_bouldin_score, silhouette_score, calinski_harabasz_score
 from sklearn.preprocessing import StandardScaler
 
 import warnings
@@ -619,22 +617,56 @@ with tab3:
                 st.subheader("Crime Hotspot Map")
                 folium_static(folium_map, width=800, height=600)
 
+
+
+# Function to load precomputed clustering results
+def load_precomputed_clustering(algorithm, params_key):
+    csv_path = f"saved_results/{params_key}_clusters.csv"
+    if os.path.exists(csv_path):
+        clustering_data = pd.read_csv(csv_path)
+        return clustering_data
+    else:
+        return None
+
 with tab4:
     st.header("Performance Metrics")
 
-    # Check if clustering data exists
-    if "clustering_data" in st.session_state and "clustering_data_scaled" in st.session_state:
-        clustering_data = st.session_state["clustering_data"]
-        clustering_data_scaled = st.session_state["clustering_data_scaled"]
+    # Select precomputed results
+    algorithm = st.selectbox(
+        "Select Algorithm",
+        ["DBSCAN", "HDBSCAN", "Hierarchical Clustering"]
+    )
 
+    # Specify parameters for the selected algorithm
+    if algorithm == "DBSCAN":
+        eps = st.slider("DBSCAN Epsilon (eps)", min_value=0.1, max_value=5.0, step=0.1, value=0.5)
+        min_samples = st.slider("DBSCAN Minimum Samples", min_value=1, max_value=20, step=1, value=5)
+        params_key = f"{algorithm}_eps={eps}_min_samples={min_samples}"
+
+    elif algorithm == "HDBSCAN":
+        min_cluster_size = st.slider("HDBSCAN Minimum Cluster Size", min_value=2, max_value=50, step=1, value=5)
+        params_key = f"{algorithm}_min_cluster_size={min_cluster_size}"
+
+    elif algorithm == "Hierarchical Clustering":
+        n_clusters = st.slider("Number of Clusters", min_value=2, max_value=20, step=1, value=5)
+        params_key = f"{algorithm}_n_clusters={n_clusters}"
+
+    # Load the selected results
+    clustering_data = load_precomputed_clustering(algorithm, params_key)
+
+    if clustering_data is not None:
         if "Cluster" in clustering_data.columns and clustering_data["Cluster"].nunique() > 1:
-            db_score = davies_bouldin_score(clustering_data_scaled, clustering_data["Cluster"])
+            # Extract clustering features
+            clustering_features = clustering_data.drop(columns=["Cluster"]).values
+
+            # Compute performance metrics
+            db_score = davies_bouldin_score(clustering_features, clustering_data["Cluster"])
+            ch_score = calinski_harabasz_score(clustering_features, clustering_data["Cluster"])
+            silhouette = silhouette_score(clustering_features, clustering_data["Cluster"])
+
+            # Display metrics
             st.write(f"Davies-Bouldin Index: {db_score:.2f}")
-
-            ch_score = calinski_harabasz_score(clustering_data_scaled, clustering_data["Cluster"])
             st.write(f"Calinski-Harabasz Index: {ch_score:.2f}")
-
-            silhouette = silhouette_score(clustering_data_scaled, clustering_data["Cluster"])
             st.write(f"Silhouette Score: {silhouette:.2f}")
 
             st.subheader("Cluster Summary")
@@ -642,10 +674,6 @@ with tab4:
             st.dataframe(cluster_summary)
         else:
             st.warning("Not enough clusters for meaningful metrics.")
-
-        # Clear unused objects
-        del clustering_data_scaled
-        gc.collect()
     else:
-        st.warning("Run clustering first to compute performance metrics.")
+        st.warning("No precomputed results found for the selected algorithm and parameters.")
 
